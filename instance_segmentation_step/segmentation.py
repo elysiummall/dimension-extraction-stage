@@ -5,7 +5,7 @@ import json
 import pickle
 from ultralytics import YOLO
 
-# ─── Configuration ────────────────────────────────────────────────────────────
+# -------------------------------------- Configuration --------------------------------------
 
 FRAMES_DIR  = 'frames'                  # folder containing your captured product frames
 OUTPUT_DIR  = 'output'                   # all results written here (local to this step)
@@ -31,7 +31,7 @@ A4_TEXTURE_KSIZE      = 15   # window size (px) used to estimate local texture v
 A4_TEXTURE_STD_MAX    = 8    # local grayscale std-dev must be below this to count as "smooth"
 A4_BRIGHTNESS_MIN     = 150  # local mean brightness (0-255) must be above this to count as "bright"
 
-# ─── Load calibration data ─────────────────────────────────────────────────────
+# -------------------------------------- Load calibration data --------------------------------------
 
 def load_calibration(path):
     """Read the camera matrix and distortion coefficients saved by camera_calibration.py."""
@@ -40,7 +40,7 @@ def load_calibration(path):
     return data['camera_matrix'], data['distortion_coefficients']
 
 
-# ─── Undistort frame ───────────────────────────────────────────────────────────
+# -------------------------------------- Undistort frame --------------------------------------
 
 def undistort_frame(frame, camera_matrix, dist_coeffs):
     """
@@ -63,7 +63,7 @@ def undistort_frame(frame, camera_matrix, dist_coeffs):
     return undistorted, new_matrix
 
 
-# ─── Product segmentation (YOLOv8) ────────────────────────────────────────────
+# -------------------------------------- Product segmentation (YOLOv8) --------------------------------------
 
 def detect_product(frame, model):
     """
@@ -118,7 +118,7 @@ def detect_product(frame, model):
     return best_mask, best_box, best_class, best_conf
 
 
-# ─── A4 sheet detection (OpenCV contours) ─────────────────────────────────────
+# -------------------------------------- A4 sheet detection (OpenCV contours) --------------------------------------
 
 def detect_a4_sheet(frame):
     """
@@ -208,7 +208,7 @@ def detect_a4_sheet(frame):
     return best_candidate, best_box
 
 
-# ─── Debug visualisation ───────────────────────────────────────────────────────
+# -------------------------------------- Debug visualisation --------------------------------------
 
 def draw_detections(frame, product_mask, product_box, product_class, a4_corners, a4_box):
     """
@@ -248,7 +248,7 @@ def draw_detections(frame, product_mask, product_box, product_class, a4_corners,
     return vis
 
 
-# ─── Process a single frame ────────────────────────────────────────────────────
+# -------------------------------------- Process a single frame --------------------------------------
 
 def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir):
     """
@@ -318,7 +318,7 @@ def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir):
     }
 
 
-# ─── Main ──────────────────────────────────────────────────────────────────────
+# -------------------------------------- Main --------------------------------------
 
 def main():
     

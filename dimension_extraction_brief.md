@@ -1,15 +1,17 @@
 # Dimension Extraction Pipeline — Technical Brief
 
-> **Role:** Stage 2 — Dimension Extraction  
-> **Input:** Segmentation masks from Stage 1 (instance segmentation)  
-> **Output:** Structured JSON dimensional profile per subject → handed to Stage 3 (asset generation)  
+> **Role:** Stage 2 — Dimension Extraction
+> **Input:** Captured product photos
+> **Output:** Structured JSON dimensional profile per product → handed to Stage 3 (asset generation)
 > **Hardware:** iPhone 17 (no LiDAR) + MacBook Pro M1 8GB RAM
 
 ---
 
 ## Goal
 
-Extract accurate real-world body and/or product dimensions from standard RGB camera input, without a depth sensor, precise enough for a colleague to generate fitting 3D assets. Target error tolerance is **under 2cm** on major body dimensions.
+Extract accurate real-world **product** dimensions from standard RGB camera input, without a depth sensor, precise enough for a colleague to generate fitting 3D assets. Target error tolerance is **under 2cm** on major product dimensions.
+
+This pipeline measures inanimate products (boxes, bottles, furniture, etc.) — not people. There is no pose/skeleton step; a product's own bounding box (from its segmentation mask) is what gets measured.
 
 ---
 
@@ -18,17 +20,15 @@ Extract accurate real-world body and/or product dimensions from standard RGB cam
 | Tool | Purpose |
 |------|---------|
 | Python 3.10+ | Core language (MacBook) |
-| YOLOv8 (Ultralytics) | Instance segmentation |
+| YOLOv8 (Ultralytics) | Product + reference-object instance segmentation |
 | Depth Anything V2 | Monocular depth estimation |
-| MediaPipe Pose | Skeletal keypoint detection (33 landmarks) |
-| OpenCV | Camera calibration, image processing, homography |
-| NumPy | Measurement calculations and averaging |
+| OpenCV | Camera calibration, image processing, contour-based reference detection |
+| NumPy | Measurement calculations, averaging, and accuracy statistics |
 | Open3D | Optional — 3D point cloud visualisation during dev |
 
 ### Install commands
 ```bash
 pip install ultralytics
-pip install mediapipe
 pip install opencv-python
 pip install numpy
 pip install open3d
@@ -42,21 +42,17 @@ pip install transformers torch torchvision  # for Depth Anything V2
 ```
 Capture (iPhone 17)
        ↓
-Camera Calibration (one-time, OpenCV)
+Camera Calibration (one-time, OpenCV)                    [camera_calibration_step/]
        ↓
-Instance Segmentation (YOLOv8)
+Instance Segmentation — Product + A4 Reference (YOLOv8 + OpenCV)   [instance_segmentation_step/]
        ↓
-Pose Estimation — Skeletal Keypoints (MediaPipe)
+Monocular Depth Estimation + Scale Anchoring (Depth Anything V2)    [depth_estimation_step/]
        ↓
-Monocular Depth Estimation (Depth Anything V2)
-       ↓
-Reference Object Scale Anchoring
-       ↓
-Measurement Extraction + Multi-frame Averaging
-       ↓
-Validation
+Measurement Extraction + Multi-frame Averaging                     [measurement_extraction_step/]
        ↓
 JSON Output → Stage 3 (Asset Generation)
+       ↓
+Accuracy Validation — vs. tape-measure ground truth                [accuracy_validation_step/]
 ```
 
 ---
@@ -68,41 +64,14 @@ JSON Output → Stage 3 (Asset Generation)
 Calibrate the iPhone 17 camera to extract intrinsic parameters (focal length, principal point). These convert pixel distances to real-world distances and must be done before any measurement work.
 
 **How:**
-- Print a checkerboard pattern (9×6 or similar)
-- Take 20–30 photos of it at varied angles with your iPhone
-- Run OpenCV calibration to extract the intrinsic matrix and distortion coefficients
-- Save to file — reuse for all future captures
-
-```python
-import cv2
-import numpy as np
-import glob
-
-# Checkerboard dimensions (inner corners)
-CHECKERBOARD = (8, 5)
-objp = np.zeros((CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
-objp[:, :2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2)
-
-obj_points, img_points = [], []
-
-for fname in glob.glob('calibration_images/*.jpg'):
-    img = cv2.imread(fname)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    ret, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, None)
-    if ret:
-        obj_points.append(objp)
-        img_points.append(corners)
-
-ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
-    obj_points, img_points, gray.shape[::-1], None, None
-)
-
-np.save('camera_matrix.npy', camera_matrix)
-np.save('dist_coeffs.npy', dist_coeffs)
-print("Calibration complete. Reprojection error:", ret)
-```
+- Print the checkerboard pattern (`camera_calibration_step/checkerboard_9x7_2.5cm.pdf`, 2.5cm squares)
+- Capture 20–30 photos of it at varied angles — either with `capture-images.py` (webcam) or directly on the iPhone, saved into `calibration_images/`
+- Run `camera_calibration.py` to extract the camera matrix and distortion coefficients
+- Results are saved to `output/calibration_data.pkl` (used by later steps) and human-readable `.txt` copies
 
 **Target reprojection error:** under 1.0 (lower is better)
+
+**Known limitation:** the current calibration photos don't cover the frame edges/corners well, so `instance_segmentation_step/segmentation.py` deliberately skips ROI-cropping after undistortion (see comment in `undistort_frame`) to avoid losing real scene content. Re-shooting calibration photos that cover the full frame, including corners, would tighten this up.
 
 ---
 
@@ -110,222 +79,98 @@ print("Calibration complete. Reprojection error:", ret)
 
 Accuracy is won or lost at capture time. Follow this protocol strictly:
 
-- Subject stands **1.5–2 metres** from camera
+- Product placed **1.5–2 metres** from camera
 - Camera on tripod or stable surface — **no handheld**
-- Camera **perpendicular** to subject — not angled
+- Camera **perpendicular** to the product — not angled
 - **Plain, high-contrast background**
-- **A4 sheet** (210mm × 297mm) held flat at subject's side or placed on ground — visible in every frame — this is your scale anchor
+- **A4 sheet** (210mm × 297mm) placed next to or behind the product, visible in every frame — this is the scale anchor
 - Even, diffuse lighting — no harsh shadows
-- Capture **minimum 5 frames** per subject, same pose — measurements will be averaged across frames
+- Capture **minimum 5 frames** per product — measurements are averaged across frames, with outliers rejected
+- For a full 3D profile, capture a **front set and a separate side set** — the current pipeline measures width/height from a front view only; depth (front-to-back) requires the side view (see Step 5)
 
 ---
 
-### Step 3 — Instance Segmentation
+### Step 3 — Instance Segmentation (Product + Reference Object)
 
-Segment the person/product and reference object separately per frame.
+`instance_segmentation_step/segmentation.py` runs two independent detectors per frame:
 
-```python
-from ultralytics import YOLO
+**Product detection (YOLOv8):**
+- If you know the product's YOLO class name (e.g. `'bottle'`, `'chair'`, `'laptop'`), set `PRODUCT_CLASS` at the top of the file to filter to it directly.
+- Otherwise, leave `PRODUCT_CLASS = None` — auto mode picks the highest-confidence detection that isn't `'person'`, so unlabelled or generic products still get picked up.
+- The segmentation mask (not just the bounding box) is saved per frame, since Step 5 uses the mask's tight bounding box for more accurate edges than YOLO's raw box.
 
-model = YOLO('yolov8n-seg.pt')  # nano — fast on M1
-results = model('input_frame.jpg')
+**A4 reference sheet detection (OpenCV, no ML):**
+- A plain brightness threshold isn't reliable — a textured, similarly-bright background (wallpaper, wood) can merge into one giant contour with the sheet.
+- `detect_a4_sheet()` instead looks for regions that are both **bright** and **smooth** (low local pixel variance), since paper is smooth but most backgrounds that are equally bright are also textured.
+- Candidate contours are then filtered to 4-sided polygons whose aspect ratio is close to A4's 1.414.
 
-# Access masks
-for result in results:
-    masks = result.masks       # segmentation masks
-    boxes = result.boxes       # bounding boxes
-    classes = result.names     # class labels
-```
-
----
-
-### Step 4 — Pose Estimation (Skeletal Keypoints)
-
-Use MediaPipe to extract 33 body landmarks per frame. Measure distances between landmark pairs — not silhouette edges. This is the most important accuracy decision in the pipeline.
-
-```python
-import mediapipe as mp
-import cv2
-
-mp_pose = mp.solutions.pose
-
-with mp_pose.Pose(
-    static_image_mode=True,
-    model_complexity=2,       # highest accuracy
-    enable_segmentation=False,
-    min_detection_confidence=0.5
-) as pose:
-    image = cv2.imread('input_frame.jpg')
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = pose.process(image_rgb)
-
-    landmarks = results.pose_landmarks.landmark
-
-    # Key landmark indices (MediaPipe convention)
-    # 11 = left shoulder, 12 = right shoulder
-    # 23 = left hip,      24 = right hip
-    # 27 = left ankle,    28 = right ankle
-    # 15 = left wrist,    16 = right wrist
-    # 0  = nose (head proxy)
-
-    h, w, _ = image.shape
-    def get_point(idx):
-        lm = landmarks[idx]
-        return np.array([lm.x * w, lm.y * h, lm.z])  # z is relative depth
-
-    left_shoulder  = get_point(11)
-    right_shoulder = get_point(12)
-    left_hip       = get_point(23)
-    right_hip      = get_point(24)
-    left_ankle     = get_point(27)
-    right_ankle    = get_point(28)
-```
+Frames are undistorted using the Step 1 calibration data before either detector runs. Results (masks, boxes, confidence, A4 corners) are written to `output/segmentation_results.json` for the next step.
 
 ---
 
-### Step 5 — Monocular Depth Estimation + Scale Anchoring
+### Step 4 — Monocular Depth Estimation + Scale Anchoring
 
-Run Depth Anything V2 to get a relative depth map, then anchor it to real-world scale using your reference object.
+`depth_estimation_step/depth_estimation.py` runs Depth Anything V2 to get a *relative* depth map per frame, then anchors it to real-world scale using the A4 sheet detected in Step 3.
 
-```python
-from transformers import pipeline
-from PIL import Image
-import numpy as np
+**How the anchoring works:**
+1. A4's real width is known: 210mm.
+2. Its pixel width in the frame comes from Step 3's bounding box.
+3. Pinhole camera model: `pixel_width = (real_width_m × focal_length_px) / distance_m` → solve for `distance_m`.
+4. Sample the relative depth map inside the A4 box and take the median value.
+5. `scale_factor = real_distance_m / median_relative_depth` — multiplying any pixel's relative depth by this factor converts it to metres.
 
-# Load depth model
-depth_pipeline = pipeline(
-    task="depth-estimation",
-    model="depth-anything/Depth-Anything-V2-Small-hf"  # small = faster on M1
-)
-
-image = Image.open('input_frame.jpg')
-depth_output = depth_pipeline(image)
-depth_map = np.array(depth_output['depth'])
-
-# --- Scale anchoring via reference object (A4 sheet) ---
-# 1. Detect A4 sheet bounding box in image (via YOLO or colour detection)
-# 2. Measure its pixel width in the image
-# 3. Known real width = 210mm = 0.21m
-# 4. Known real distance to camera = your fixed capture distance (e.g. 1.8m)
-# 5. Using camera intrinsics: pixel_width = (real_width * focal_length) / distance
-#    → solve for scale factor
-
-focal_length = camera_matrix[0, 0]   # from calibration
-known_real_width = 0.21              # A4 width in metres
-a4_pixel_width = 320                 # example — measure from detected A4 box
-
-estimated_distance = (known_real_width * focal_length) / a4_pixel_width
-print(f"Estimated subject distance: {estimated_distance:.3f}m")
-```
+Frames where the A4 sheet or product wasn't detected in Step 3 are skipped (scale can't be anchored without the reference object). Metric depth maps and colourised visualisations are saved to `output/`, consumed by Step 5.
 
 ---
 
-### Step 6 — Measurement Extraction
+### Step 5 — Measurement Extraction + Multi-Frame Averaging
 
-Convert keypoint pixel positions to real-world measurements using camera intrinsics and estimated depth.
+`measurement_extraction_step/measurement_extraction.py`:
 
-```python
-def pixel_to_world(px, py, depth_m, camera_matrix):
-    fx = camera_matrix[0, 0]
-    fy = camera_matrix[1, 1]
-    cx = camera_matrix[0, 2]
-    cy = camera_matrix[1, 2]
-    x = (px - cx) * depth_m / fx
-    y = (py - cy) * depth_m / fy
-    return np.array([x, y, depth_m])
+1. Loads the metric depth map and the product's segmentation mask for each frame.
+2. Takes the **tight bounding box of the mask** (`get_mask_tight_bbox`) rather than YOLO's raw box — this excludes padding/background YOLO's box might include.
+3. Measures **width** across the middle row and **height** down the middle column of that box (avoiding noisy depth at the box's outer edges), converting pixel pairs to 3D world distance via the pinhole model (`pixel_to_world`).
+4. Repeats across all captured frames, then applies `robust_average()`: discards any per-frame measurement more than 1 standard deviation from the mean, and reports the mean ± std of what remains.
 
-def measure_distance_3d(p1_px, p2_px, depth_map, camera_matrix):
-    d1 = depth_map[int(p1_px[1]), int(p1_px[0])]
-    d2 = depth_map[int(p2_px[1]), int(p2_px[0])]
-    p1_world = pixel_to_world(p1_px[0], p1_px[1], d1, camera_matrix)
-    p2_world = pixel_to_world(p2_px[0], p2_px[1], d2, camera_matrix)
-    return np.linalg.norm(p1_world - p2_world)
-
-# Example measurements
-shoulder_width = measure_distance_3d(left_shoulder[:2], right_shoulder[:2], depth_map, camera_matrix)
-hip_width      = measure_distance_3d(left_hip[:2], right_hip[:2], depth_map, camera_matrix)
-torso_height   = measure_distance_3d(
-    ((left_shoulder[0]+right_shoulder[0])/2, (left_shoulder[1]+right_shoulder[1])/2),
-    ((left_hip[0]+right_hip[0])/2,           (left_hip[1]+right_hip[1])/2),
-    depth_map, camera_matrix
-)
-```
+**Current limitation:** only width and height are measured (a single front-facing view can't recover depth/front-to-back thickness). The output JSON's `depth` field is `null` with a note — run a second, side-view capture set and merge the two JSONs for a full 3D profile.
 
 ---
 
-### Step 7 — Multi-Frame Averaging + Outlier Rejection
+### Step 6 — JSON Output
 
-Run steps 3–6 across all 5+ frames, collect measurements, discard outliers, average remainder.
+`measurement_extraction.py` writes one file per product to `measurement_extraction_step/output/measurements_<subject_id>.json`:
 
-```python
-import numpy as np
-
-def robust_average(measurements):
-    measurements = np.array(measurements)
-    mean = np.mean(measurements)
-    std  = np.std(measurements)
-    # Keep only measurements within 1 std of mean
-    filtered = measurements[np.abs(measurements - mean) < std]
-    return float(np.mean(filtered)), float(np.std(filtered))
-
-# Collect across frames
-shoulder_measurements = []  # append per-frame result here
-
-final_shoulder_width, shoulder_error = robust_average(shoulder_measurements)
-print(f"Shoulder width: {final_shoulder_width*100:.1f}cm ± {shoulder_error*100:.1f}cm")
-```
-
----
-
-### Step 8 — JSON Output
-
-Structure your output for Stage 3 (asset generation).
-
-```python
-import json
-from datetime import datetime
-
-output = {
-    "subject_id": "subject_001",
-    "captured_at": datetime.now().isoformat(),
-    "capture_distance_m": estimated_distance,
-    "frame_count": 5,
-    "measurements_cm": {
-        "shoulder_width":  round(final_shoulder_width * 100, 1),
-        "hip_width":       round(final_hip_width * 100, 1),
-        "torso_height":    round(final_torso_height * 100, 1),
-        "total_height":    round(final_total_height * 100, 1),
-        "arm_length":      round(final_arm_length * 100, 1),
-        "inseam":          round(final_inseam * 100, 1),
-        "head_width":      round(final_head_width * 100, 1),
-    },
-    "error_estimates_cm": {
-        "shoulder_width": round(shoulder_error * 100, 2),
-        "hip_width":      round(hip_error * 100, 2),
-    },
-    "reference_object": "A4_sheet_210x297mm",
-    "model_versions": {
-        "segmentation":       "yolov8n-seg",
-        "depth_estimation":   "Depth-Anything-V2-Small",
-        "pose_estimation":    "mediapipe_pose_complexity_2"
-    }
+```json
+{
+  "subject_id": "product_001",
+  "captured_at": "2026-07-01T12:00:00",
+  "frame_count": 5,
+  "measurements_cm": { "width": 12.5, "height": 30.1, "depth": null },
+  "error_estimates_cm": { "width": 0.14, "height": 0.22 },
+  "reference_object": "A4_sheet_210x297mm",
+  "model_versions": { "segmentation": "yolov8n-seg", "depth_estimation": "Depth-Anything-V2-Small" },
+  "notes": "Depth (front-to-back) dimension not measured — requires a separate side-view capture."
 }
-
-with open(f'measurements_{output["subject_id"]}.json', 'w') as f:
-    json.dump(output, f, indent=2)
 ```
+
+`error_estimates_cm` is **precision** (frame-to-frame agreement), not accuracy — see Step 7 for the distinction and how it's checked.
 
 ---
 
-### Step 9 — Validation
+### Step 7 — Accuracy Validation
 
-Before using in production, validate against tape measure ground truth.
+Precision and confidence scores tell you the pipeline is *consistent* with itself; they don't tell you it's *correct*. Accuracy can only be established by comparing pipeline output against real, physically-measured ground truth — that's what this step does.
 
-- Measure 3–5 known objects or people with a tape measure
-- Run them through your pipeline
-- Compare output vs ground truth
-- Log error per measurement type
-- If consistently over 2cm error: check calibration accuracy first, then reference object detection reliability, then frame count
+`accuracy_validation_step/accuracy_validation.py`:
+
+1. **Ground truth** — tape-measure 3–5 real products by hand and record their true dimensions in `ground_truth.json`, keyed by the same `subject_id` used in Step 5/6. (An example entry and a `_README` key ship in the file — delete both once you've added real ones.)
+2. **Compare** — for every product with both a ground-truth entry and a pipeline JSON, computes per dimension: signed error, absolute error, % error, and whether it's within the 2cm tolerance.
+3. **Flag overconfidence** — separately checks whether the pipeline's *reported* `error_estimates_cm` (precision) was small while the *actual* deviation from truth (accuracy) was large. That combination is the signature of a **systematic bias** — e.g. a calibration or scale-anchoring problem — as opposed to random per-frame noise, and it would be invisible if you only looked at `error_estimates_cm`.
+4. **Aggregate** — rolls all validated products up into per-dimension mean absolute error, max error, mean *signed* bias (systematic over/under-measurement — random error would average back towards zero, bias won't), and pass rate.
+5. **Track over time** — every run appends a summary line to `output/accuracy_history.jsonl`, so you can see whether a calibration or protocol change actually improved accuracy, rather than re-validating from scratch each time.
+6. Warns if fewer than 3 products have been validated — a single match could be a fluke either way.
+
+Run this any time you change calibration, the capture protocol, or the detection thresholds — not just once before "production."
 
 ---
 
@@ -333,23 +178,23 @@ Before using in production, validate against tape measure ground truth.
 
 1. **Camera calibration quality** — low reprojection error = everything downstream is more accurate
 2. **Reference object reliability** — if A4 detection is flaky, scale anchoring breaks
-3. **Frame averaging** — more frames = lower random error
+3. **Frame averaging** — more frames = lower random error (but won't fix systematic bias — see Step 7)
 4. **Capture protocol discipline** — fixed distance, perpendicular angle, good lighting
-5. **MediaPipe model complexity** — use `model_complexity=2` for best keypoint accuracy
+5. **Product mask tightness** — a loose/noisy segmentation mask shifts the bounding-box corners used for measurement
 
 ---
 
 ## What to Read / Look Into Next
 
 - `cv2.calibrateCamera()` — OpenCV docs
-- MediaPipe Pose landmark map — know what each of the 33 indices represents
 - Depth Anything V2 GitHub — `https://github.com/DepthAnything/Depth-Anything-V2`
 - `cv2.findHomography()` — for more robust reference object scale extraction
 - Perspective-n-Point (PnP) — next-level technique for recovering 3D positions from 2D points: `cv2.solvePnP()`
+- `cv2.findNonZero()` / `cv2.boundingRect()` — used for tight mask-based bounding boxes in Step 5
 - Apple Vision framework — if processing moves to iPhone directly later
 
 ---
 
 ## Handoff to Stage 3
 
-Deliver per-subject JSON files (as above) to your colleague for asset generation. Include the `error_estimates_cm` block so they know measurement confidence per dimension and can factor tolerances into asset fitting.
+Deliver per-product JSON files (Step 6) to your colleague for asset generation, including the `error_estimates_cm` block so they know per-frame measurement consistency. Also share the latest `accuracy_validation_step/output/accuracy_report.json` (or at least its `overall_pass` / `summary_by_dimension`) so they know the pipeline's *actual*, ground-truth-checked accuracy — not just its internal precision — when deciding fitting tolerances for generated assets.

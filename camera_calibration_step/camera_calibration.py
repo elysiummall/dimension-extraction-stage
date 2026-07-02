@@ -33,6 +33,7 @@ def calibrate_camera():
     # Arrays to store object points and image points from all images
     objpoints = []  # 3D points in real world space
     imgpoints = []  # 2D points in image plane
+    image_names = []  # Filenames corresponding to each entry in objpoints/imgpoints
     
     # Get list of calibration images
     images = glob.glob(CALIBRATION_IMAGES_PATH)
@@ -58,7 +59,8 @@ def calibrate_camera():
         # If found, add object points and image points
         if ret:
             objpoints.append(objp)
-            
+            image_names.append(fname)
+
             # Refine corner positions
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
@@ -84,26 +86,31 @@ def calibrate_camera():
     # Calibrate camera
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None
 )
-    
+
+    # Per-image error breakdown, so bad images can be spotted without a full reshoot
+    per_image_errors = calculate_reprojection_errors(objpoints, imgpoints, mtx, dist, rvecs, tvecs, image_names)
+    print_reprojection_report(per_image_errors, ret, OUTPUT_DIRECTORY)
+
     # Save calibration results
     calibration_data = {
         'camera_matrix': mtx,
         'distortion_coefficients': dist,
         'rotation_vectors': rvecs,
         'translation_vectors': tvecs,
-        'reprojection_error': ret
+        'reprojection_error': ret,
+        'per_image_errors': per_image_errors
     }
-    
+
     with open(os.path.join(OUTPUT_DIRECTORY, 'calibration_data.pkl'), 'wb') as f:
         pickle.dump(calibration_data, f)
-    
+
     # Save camera matrix and distortion coefficients as text files
     np.savetxt(os.path.join(OUTPUT_DIRECTORY, 'camera_matrix.txt'), mtx)
     np.savetxt(os.path.join(OUTPUT_DIRECTORY, 'distortion_coefficients.txt'), dist)
-    
+
     print(f"Calibration complete! RMS re-projection error: {ret}")
     print(f"Results saved to {OUTPUT_DIRECTORY}")
-    
+
     return ret, mtx, dist, rvecs, tvecs
 
 def undistort_images(mtx, dist):
@@ -151,32 +158,48 @@ def undistort_images(mtx, dist):
     
     print(f"Undistorted images saved to {undistorted_dir}")
 
-def calculate_reprojection_error(objpoints, imgpoints, mtx, dist, rvecs, tvecs):
+def calculate_reprojection_errors(objpoints, imgpoints, mtx, dist, rvecs, tvecs, image_names):
     """
-    Calculate the reprojection error for each calibration image.
-    
-    Args:
-        objpoints: 3D points in real world space
-        imgpoints: 2D points in image plane
-        mtx: Camera matrix
-        dist: Distortion coefficients
-        rvecs: Rotation vectors
-        tvecs: Translation vectors
-    
+    Calculate the RMS reprojection error for each calibration image individually.
+
+    The per-image error is computed the same way as OpenCV's overall RMS
+    (sqrt of the mean squared pixel distance), so it's directly comparable
+    to the total reprojection error printed after calibration.
+
     Returns:
-        mean_error: Mean reprojection error
+        List of (image_name, rms_error_px) tuples, sorted worst-first.
     """
-    total_error = 0
+    errors = []
     for i in range(len(objpoints)):
         imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
-        error = cv2.norm(imgpoints[i], imgpoints2, cv2.NORM_L2) / len(imgpoints2)
-        total_error += error
-        print(f"Reprojection error for image {i+1}: {error}")
-    
-    mean_error = total_error / len(objpoints)
-    print(f"Mean reprojection error: {mean_error}")
-    
-    return mean_error
+        diff = imgpoints[i].reshape(-1, 2) - imgpoints2.reshape(-1, 2)
+        rms = float(np.sqrt(np.mean(np.sum(diff ** 2, axis=1))))
+        errors.append((image_names[i], rms))
+
+    errors.sort(key=lambda item: item[1], reverse=True)
+    return errors
+
+def print_reprojection_report(per_image_errors, overall_rms, output_directory, flag_multiple=1.5):
+    """
+    Print a worst-first per-image error report and flag images that are
+    dragging the overall RMS up, so bad images can be spotted without
+    reshooting the whole set. Also saves the report to a text file.
+    """
+    rms_values = [error for _, error in per_image_errors]
+    median_error = float(np.median(rms_values))
+    threshold = median_error * flag_multiple
+
+    lines = [f"Overall RMS reprojection error: {overall_rms:.3f} px",
+             f"Median per-image error: {median_error:.3f} px", ""]
+    for name, error in per_image_errors:
+        flag = "  <-- consider reviewing/retaking" if error > threshold else ""
+        lines.append(f"{error:6.3f} px  {os.path.basename(name)}{flag}")
+
+    report = "\n".join(lines)
+    print(report)
+
+    with open(os.path.join(output_directory, 'reprojection_errors.txt'), 'w') as f:
+        f.write(report + "\n")
 
 def main():
     """

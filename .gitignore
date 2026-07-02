@@ -10,3 +10,4 @@ depth_estimation_step/output/
 measurement_extraction_step/__pycache__/
 measurement_extraction_step/output/
 .DS_Store
+accuracy_validation_step/__pycache__/
