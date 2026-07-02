@@ -1,0 +1,17 @@
+# Dimension Extraction pipeline — Python 3.10+ (developed on 3.13, macOS / Apple Silicon)
+# Install with:  pip install -r requirements.txt
+
+numpy==2.5.0
+opencv-python==4.13.0.92
+
+# Product + reference-object instance segmentation (YOLO26)
+ultralytics==8.4.84
+
+# Monocular depth estimation (Depth Anything V2 via HuggingFace)
+torch==2.12.1
+torchvision==0.27.1
+transformers==5.12.1
+pillow==12.3.0
+
+# Optional — 3D point-cloud visualisation during development only
+# open3d
