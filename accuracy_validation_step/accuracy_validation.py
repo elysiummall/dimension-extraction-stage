@@ -122,14 +122,22 @@ def aggregate(all_results):
 
         abs_errors    = [r['abs_error_cm'] for r in dim_results]
         signed_errors = [r['signed_error_cm'] for r in dim_results]
+        pct_errors    = [r['pct_error'] for r in dim_results if r['pct_error'] is not None]
         pass_count    = sum(1 for r in dim_results if r['within_tolerance'])
         overconfident_count = sum(1 for r in dim_results if r['overconfident'])
+
+        # Accuracy as a percentage: 100% = perfect, minus the mean relative error.
+        # Floored at 0 so a pathological measurement (>100% off) can't go negative.
+        mean_pct_error = float(np.mean(pct_errors)) if pct_errors else None
+        accuracy_pct   = max(0.0, 100.0 - mean_pct_error) if mean_pct_error is not None else None
 
         summary[dim] = {
             'n':                   len(dim_results),
             'mean_abs_error_cm':   round(float(np.mean(abs_errors)), 2),
             'max_abs_error_cm':    round(float(np.max(abs_errors)), 2),
             'mean_signed_bias_cm': round(float(np.mean(signed_errors)), 2),
+            'mean_pct_error':      round(mean_pct_error, 1) if mean_pct_error is not None else None,
+            'accuracy_pct':        round(accuracy_pct, 1) if accuracy_pct is not None else None,
             'pass_rate':           round(pass_count / len(dim_results), 2),
             'overconfident_count': overconfident_count,
         }
@@ -199,16 +207,26 @@ def main():
         verdict = "PASS" if s['mean_abs_error_cm'] <= TOLERANCE_CM else "FAIL"
         if verdict == "FAIL":
             overall_pass = False
+        accuracy_str = f"accuracy={s['accuracy_pct']:.1f}%  " if s['accuracy_pct'] is not None else ""
         print(f"  {dim:<8} n={s['n']:<3} MAE={s['mean_abs_error_cm']:.2f}cm  "
               f"max={s['max_abs_error_cm']:.2f}cm  bias={s['mean_signed_bias_cm']:+.2f}cm  "
-              f"pass_rate={s['pass_rate']*100:.0f}%  ({verdict})")
+              f"{accuracy_str}pass_rate={s['pass_rate']*100:.0f}%  ({verdict})")
         if s['overconfident_count'] > 0:
             print(f"           [!] {s['overconfident_count']} measurement(s) were overconfident — "
                   f"reported error bars looked tight but missed the true value. That usually means "
                   f"a systematic bias (calibration or scale anchoring), not random noise — check "
                   f"those before adding more frames.")
 
+    # Overall accuracy % across every validated measurement (all dimensions pooled).
+    all_pct_errors = [r['pct_error'] for r in all_results if r['pct_error'] is not None]
+    overall_accuracy_pct = (
+        round(max(0.0, 100.0 - float(np.mean(all_pct_errors))), 1) if all_pct_errors else None
+    )
+
     print()
+    if overall_accuracy_pct is not None:
+        print(f"Overall accuracy: {overall_accuracy_pct:.1f}% "
+              f"(mean relative error {100 - overall_accuracy_pct:.1f}% across {len(all_pct_errors)} measurements)")
     if overall_pass:
         print(f"Overall: PASS — all dimensions within {TOLERANCE_CM}cm target on average.")
     else:
@@ -224,6 +242,7 @@ def main():
         'tolerance_cm':         TOLERANCE_CM,
         'validated_subjects':   validated_subjects,
         'overall_pass':         overall_pass,
+        'overall_accuracy_pct': overall_accuracy_pct,
         'summary_by_dimension': summary,
         'measurements':         all_results,
         'skipped_subjects':     skipped,
@@ -238,6 +257,7 @@ def main():
         'validated_at':       report['validated_at'],
         'validated_subjects':  validated_subjects,
         'overall_pass':        overall_pass,
+        'overall_accuracy_pct': overall_accuracy_pct,
         'mean_abs_error_cm':  {dim: s['mean_abs_error_cm'] for dim, s in summary.items()},
     }
     with open(HISTORY_FILE, 'a') as f:
