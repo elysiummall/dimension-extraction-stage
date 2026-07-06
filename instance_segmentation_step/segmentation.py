@@ -3,7 +3,7 @@ import numpy as np
 import os
 import json
 import pickle
-from ultralytics import YOLOE
+from ultralytics import YOLOE, SAM
 
 # -------------------------------------- Configuration --------------------------------------
 
@@ -21,6 +21,15 @@ PRODUCT_PROMPT = 'sports ball'
 # Inference resolution. The measurements are taken from the mask's edges, so run the
 # network at a higher resolution than the default 640 for cleaner boundaries.
 IMG_SIZE = 1280
+
+# SAM 2 mask refinement. YOLOE stays responsible for FINDING the product (its
+# open-vocabulary box), but its prototype-based masks are soft at object
+# boundaries — and the measurement step reads dimensions off exactly that
+# boundary. When enabled, YOLOE's box is passed to SAM 2 as a prompt and the
+# SAM 2 mask replaces YOLOE's. The raw YOLOE mask is still saved alongside
+# (*_product_mask_yoloe.png) so the two can be compared visually.
+SAM2_REFINE = True
+SAM2_MODEL  = os.path.join(SCRIPT_DIR, 'sam2.1_b.pt')  # downloads automatically on first run
 
 # A4 sheet is 210mm wide × 297mm tall (portrait).
 # These constants control how the detector decides what counts as an A4 sheet.
@@ -115,6 +124,31 @@ def detect_product(frame, model):
             best_box = box.tolist()
 
     return best_mask, best_box, best_class, best_conf
+
+
+# -------------------------------------- SAM 2 mask refinement --------------------------------------
+
+def refine_mask_with_sam2(frame, box, sam_model):
+    """
+    Re-segment the product with SAM 2, prompted by YOLOE's bounding box.
+
+    SAM 2 is class-agnostic — it doesn't know what a 'bottle' is, it just
+    segments whatever object the box points at, with boundary quality that
+    YOLO-family mask heads can't match. The box prompt is what ties it to the
+    product YOLOE identified.
+
+    Returns a binary mask at frame resolution, or None if SAM 2 returned nothing
+    (caller keeps the YOLOE mask in that case).
+    """
+    results = sam_model(frame, bboxes=[box], verbose=False)
+    if not results or results[0].masks is None or len(results[0].masks.data) == 0:
+        return None
+
+    raw_mask = results[0].masks.data[0].cpu().numpy()
+    h, w = frame.shape[:2]
+    if raw_mask.shape != (h, w):
+        raw_mask = cv2.resize(raw_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+    return (raw_mask > 0.5).astype(np.uint8) * 255
 
 
 # -------------------------------------- A4 sheet detection (OpenCV contours) --------------------------------------
@@ -249,14 +283,15 @@ def draw_detections(frame, product_mask, product_box, product_class, a4_corners,
 
 # -------------------------------------- Process a single frame --------------------------------------
 
-def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir):
+def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir, sam_model=None):
     """
     Full Step 3 pipeline for one frame:
       1. Load and undistort the image.
       2. Detect the product with YOLO.
-      3. Detect the A4 sheet with OpenCV.
-      4. Save a labelled debug image.
-      5. Return a result dict for this frame.
+      3. Optionally refine the product mask with SAM 2 (box-prompted).
+      4. Detect the A4 sheet with OpenCV.
+      5. Save a labelled debug image.
+      6. Return a result dict for this frame.
     """
     frame = cv2.imread(frame_path)
     if frame is None:
@@ -268,10 +303,23 @@ def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir):
 
     # 2 — YOLO product segmentation
     product_mask, product_box, product_class, product_conf = detect_product(frame, model)
+    mask_source = 'yoloe-26s-seg'
+    yoloe_mask  = None
     if product_mask is None:
         print(f"  [!] No product detected in {os.path.basename(frame_path)}")
     else:
         print(f"  [✓] Product detected  — class '{product_class}', confidence {product_conf:.2f}, box {product_box}")
+
+        # 3 — SAM 2 refinement: same product, sharper boundary
+        if sam_model is not None:
+            refined = refine_mask_with_sam2(frame, product_box, sam_model)
+            if refined is not None:
+                yoloe_mask   = product_mask   # kept for visual comparison
+                product_mask = refined
+                mask_source  = 'yoloe-26s-seg + sam2.1_b refine'
+                print(f"  [✓] Mask refined with SAM 2")
+            else:
+                print(f"  [!] SAM 2 returned no mask — keeping YOLOE mask")
 
     # 3 — OpenCV A4 sheet detection
     a4_corners, a4_box = detect_a4_sheet(frame)
@@ -286,11 +334,15 @@ def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir):
     debug_path = os.path.join(output_dir, f'{base_name}_detections.jpg')
     cv2.imwrite(debug_path, vis)
 
-    # Save product mask as a separate image so later steps can load it directly
+    # Save product mask as a separate image so later steps can load it directly.
+    # When SAM 2 refinement ran, the refined mask takes the canonical filename
+    # (downstream steps are unchanged) and the raw YOLOE mask is saved alongside.
     mask_path = None
     if product_mask is not None:
         mask_path = os.path.join(output_dir, f'{base_name}_product_mask.png')
         cv2.imwrite(mask_path, product_mask)
+    if yoloe_mask is not None:
+        cv2.imwrite(os.path.join(output_dir, f'{base_name}_product_mask_yoloe.png'), yoloe_mask)
 
     # 5 — Package results for this frame
     # NOTE: paths are stored as absolute so that later pipeline steps (which live in
@@ -299,6 +351,7 @@ def process_frame(frame_path, model, camera_matrix, dist_coeffs, output_dir):
     return {
         'frame':        os.path.abspath(frame_path),
         'debug_image':  os.path.abspath(debug_path),
+        'mask_source':  mask_source,
         'product': {
             'detected':     product_mask is not None,
             'class':        product_class,
@@ -356,13 +409,20 @@ def main():
     model.set_classes([PRODUCT_PROMPT], model.get_text_pe([PRODUCT_PROMPT]))
     print("Model ready.\n")
 
+    # Load SAM 2 for boundary refinement (optional — see SAM2_REFINE above)
+    sam_model = None
+    if SAM2_REFINE:
+        print(f"Loading SAM 2 model '{SAM2_MODEL}' for mask refinement...")
+        sam_model = SAM(SAM2_MODEL)
+        print("SAM 2 ready.\n")
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Process every frame and collect results
     all_results = []
     for i, fp in enumerate(frame_paths):
         print(f"Frame {i+1}/{len(frame_paths)}: {os.path.basename(fp)}")
-        result = process_frame(fp, model, camera_matrix, dist_coeffs, OUTPUT_DIR)
+        result = process_frame(fp, model, camera_matrix, dist_coeffs, OUTPUT_DIR, sam_model)
         if result:
             all_results.append(result)
         print()

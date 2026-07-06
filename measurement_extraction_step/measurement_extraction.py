@@ -8,8 +8,18 @@ from datetime import datetime
 
 SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))  # folder this script lives in, so paths work from any cwd
 DEPTH_RESULTS = os.path.join(SCRIPT_DIR, '..', 'depth_estimation_step', 'output', 'depth_results.json')
+SEG_RESULTS   = os.path.join(SCRIPT_DIR, '..', 'instance_segmentation_step', 'output', 'segmentation_results.json')
 OUTPUT_DIR    = os.path.join(SCRIPT_DIR, 'output')
-SUBJECT_ID    = 'product_003'   # change this per product you measure
+VIEWS_DIR     = os.path.join(OUTPUT_DIR, 'views')            # per-view results; merge_views.py combines them
+SUBJECT_ID    = os.environ.get('SUBJECT', 'product_000')     # change per product (or pass SUBJECT=... via make)
+
+# Which side of the product the current frames show. A single view can only
+# measure two dimensions, so a full profile takes two capture sets:
+#   'front' — measures width and height
+#   'side'  — measures depth (the side view's horizontal extent) and height again
+# Run the pipeline once per view (swapping the frames/ folder in between), then
+# run merge_views.py to combine both into the final measurements JSON.
+VIEW = os.environ.get('VIEW', 'front')
 
 # ─── Pixel → world coordinate conversion ──────────────────────────────────────
 
@@ -217,8 +227,27 @@ def robust_average(values):
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
+def get_segmentation_model_label():
+    """
+    Read which mask source Step 3 actually used (plain YOLOE, or YOLOE + SAM 2
+    refinement) so the output JSON records the truth rather than a hardcoded name.
+    """
+    try:
+        with open(SEG_RESULTS) as f:
+            entries = json.load(f)
+        return entries[0].get('mask_source', 'yoloe-26s-seg')
+    except Exception:
+        return 'yoloe-26s-seg'
+
+
 def main():
     print("=== Step 6 — Product Measurement Extraction ===\n")
+
+    if VIEW not in ('front', 'side'):
+        print(f"[!] VIEW must be 'front' or 'side', got '{VIEW}'.")
+        return
+
+    print(f"Subject: {SUBJECT_ID}   View: {VIEW}\n")
 
     # Load depth results from Step 5
     if not os.path.exists(DEPTH_RESULTS):
@@ -275,16 +304,18 @@ def main():
     print(f"Final width  : {final_width_cm} cm  ± {width_err_cm} cm  ({len(width_measurements)} frames)")
     print(f"Final height : {final_height_cm} cm  ± {height_err_cm} cm  ({len(height_measurements)} frames)")
 
-    # Build output JSON for Stage 3 (asset generation)
+    # Build the per-view result. 'width'/'height' here are the silhouette's
+    # horizontal/vertical extent AS SEEN FROM THIS VIEW — merge_views.py maps
+    # them onto the product's real axes (a side view's "width" is the product's
+    # front-to-back depth) and writes the final measurements_<subject>.json.
     output = {
         "subject_id":     SUBJECT_ID,
+        "view":           VIEW,
         "captured_at":    datetime.now().isoformat(),
         "frame_count":    len(width_measurements),
         "measurements_cm": {
             "width":  final_width_cm,
             "height": final_height_cm,
-            # Depth (front-to-back) requires a side-view capture — add here when available
-            "depth":  None,
         },
         "error_estimates_cm": {
             "width":  width_err_cm,
@@ -293,21 +324,19 @@ def main():
         "reference_object": "A4_sheet_210x297mm",
         "capture_metadata": capture_metadata,
         "model_versions": {
-            "segmentation":     "yolo26n-seg",
+            "segmentation":     get_segmentation_model_label(),
             "depth_estimation": "Depth-Anything-V2-Small",
         },
-        "notes": (
-            "Depth (front-to-back) dimension not measured — requires a separate side-view capture. "
-            "Run both a front and side capture set and merge the JSONs for a full 3D profile."
-        )
     }
 
-    out_path = os.path.join(OUTPUT_DIR, f'measurements_{SUBJECT_ID}.json')
+    os.makedirs(VIEWS_DIR, exist_ok=True)
+    out_path = os.path.join(VIEWS_DIR, f'measurements_{SUBJECT_ID}_{VIEW}.json')
     with open(out_path, 'w') as f:
         json.dump(output, f, indent=2)
 
-    print(f"\nOutput saved to: {out_path}")
-    print("\nStep 6 complete. Pass this JSON to Stage 3 (asset generation).")
+    print(f"\nPer-view output saved to: {out_path}")
+    print("\nStep 6 complete. Run merge_views.py (make merge-views) to build the")
+    print("final measurements JSON for Stage 3 from all captured views.")
 
 
 if __name__ == '__main__':

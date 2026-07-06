@@ -1,5 +1,5 @@
 
-.PHONY: help setup camera-calibration instance-segmentation depth-estimation measurement-extraction accuracy-validation full-pipeline clean-images clean-frames clean-some-outputs clean-outputs clean-all
+.PHONY: help setup camera-calibration instance-segmentation depth-estimation measurement-extraction merge-views accuracy-validation full-pipeline clean-images clean-frames clean-some-outputs clean-outputs clean-all
 
 VENV = venv
 PYTHON = $(VENV)/bin/python
@@ -10,6 +10,8 @@ help:
 	@echo "  make setup					* Create a local virtual environment and install dependencies"
 	@echo "  make [specify_step]				* Run the specified step"
 	@echo "  make full-pipeline				* Run the entire pipeline"
+	@echo "  VIEW=side make measurement-extraction	* Measure a side-view capture set (default: front)"
+	@echo "  make merge-views				* Combine front+side views into the final measurements JSON"
 	@echo "  make clean-all    				* Remove build artifacts and clear outputs"
 
 setup: requirements.txt
@@ -34,14 +36,18 @@ measurement-extraction:
 	@echo "running measurement step..."
 	@$(PYTHON) measurement_extraction_step/measurement_extraction.py
 
+merge-views:
+	@echo "merging per-view measurements..."
+	@$(PYTHON) measurement_extraction_step/merge_views.py
+
 accuracy-validation:
 	@echo "running accuracy validation step..."
 	@$(PYTHON) accuracy_validation_step/accuracy_validation.py
 
-most-pipeline: instance-segmentation depth-estimation measurement-extraction
-	@echo "running the majority of the pipeline"	
+most-pipeline: instance-segmentation depth-estimation measurement-extraction merge-views
+	@echo "running the majority of the pipeline"
 
-full-pipeline: camera-calibration instance-segmentation depth-estimation measurement-extraction accuracy-validation
+full-pipeline: camera-calibration instance-segmentation depth-estimation measurement-extraction merge-views accuracy-validation
 	@echo "running full pipeline complete"
 
 clean-images:
