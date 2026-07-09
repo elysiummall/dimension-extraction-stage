@@ -26,7 +26,7 @@ EXP_DIR    = os.path.join(SCRIPT_DIR, 'prompt_experiments')
 #                     which is what motivated this control.
 PRODUCTS = {
     'converse': {
-        'frames_dir': os.path.join(SCRIPT_DIR, 'frames'),
+        'frames_dir': os.path.join(EXP_DIR, 'frames', 'converse'),
         'prompts': {
             'short_label':      'shoe',
             'category':         'sneaker',

@@ -196,6 +196,49 @@ def measure_frame(depth_result):
     }
 
 
+# ─── A4 detection sanity check ──────────────────────────────────────────────────
+
+def a4_quad_looks_wrong(corners_px):
+    """
+    Decide whether a detected A4 quad is geometrically implausible.
+
+    Diagnostic overlays caught a frame where the A4 detector locked onto a
+    wall panel instead of the paper — a skewed quad (aspect 0.56, corners
+    60-124 degrees) whose bogus distance scaled that frame's measurements by
+    +53%. The physical sheet is US Letter (aspect 0.773), but the detector's
+    contour tends to leak ~10% into smooth bright wall above the paper, so
+    honest detections read anywhere from 0.71 to 0.77 — the tolerance covers
+    that whole band while still rejecting the wall panel. Checked per frame —
+    no cross-frame assumptions, because capture sets may legitimately mix
+    camera distances.
+
+    Returns a short reason string if the quad fails, or None if it looks fine.
+    """
+    if not corners_px or len(corners_px) != 4:
+        return "no A4 corners"
+
+    pts   = np.array(corners_px, dtype=float)
+    sides = [np.linalg.norm(pts[i] - pts[(i + 1) % 4]) for i in range(4)]
+    if min(sides) <= 0:
+        return "degenerate quad"
+
+    sheet_aspect = 215.9 / 279.4
+    a, b   = (sides[0] + sides[2]) / 2, (sides[1] + sides[3]) / 2
+    aspect = min(a, b) / max(a, b)
+    if abs(aspect - sheet_aspect) > 0.10:
+        return f"aspect {aspect:.2f} (letter sheet is {sheet_aspect:.2f})"
+
+    for i in range(4):
+        v1 = pts[(i - 1) % 4] - pts[i]
+        v2 = pts[(i + 1) % 4] - pts[i]
+        cos = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        angle = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+        if abs(angle - 90.0) > 15.0:
+            return f"corner angle {angle:.0f} deg"
+
+    return None
+
+
 # ─── Multi-frame averaging with outlier rejection ──────────────────────────────
 
 def robust_average(values):
@@ -241,7 +284,7 @@ def get_segmentation_model_label():
 
 
 def main():
-    print("=== Step 6 — Product Measurement Extraction ===\n")
+    print("\n======== Step 6 — Product Measurement Extraction =========\n")
 
     if VIEW not in ('front', 'side'):
         print(f"[!] VIEW must be 'front' or 'side', got '{VIEW}'.")
@@ -270,6 +313,12 @@ def main():
     for i, dr in enumerate(depth_results):
         frame_name = os.path.basename(dr['frame'])
         print(f"Frame {i+1}/{len(depth_results)}: {frame_name}")
+
+        a4_problem = a4_quad_looks_wrong(dr.get('a4_sheet', {}).get('corners_px'))
+        if a4_problem:
+            print(f"  [!] A4 detection rejected ({a4_problem}) — the scale from a "
+                  f"mis-detected reference propagates 1:1 into every measurement, frame skipped.\n")
+            continue
 
         measurements = measure_frame(dr)
         if measurements is None:
@@ -321,7 +370,7 @@ def main():
             "width":  width_err_cm,
             "height": height_err_cm,
         },
-        "reference_object": "A4_sheet_210x297mm",
+        "reference_object": "US_Letter_sheet_215.9x279.4mm",
         "capture_metadata": capture_metadata,
         "model_versions": {
             "segmentation":     get_segmentation_model_label(),

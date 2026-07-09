@@ -26,7 +26,7 @@ SAM2_MODEL = os.path.join(SCRIPT_DIR, 'sam2.1_b.pt')   # downloads automatically
 # labels — 'black cylindrical thermos' or 'cardboard shipping box' both work.
 # Change this per product you measure. (The model expects lowercase text ending
 # in a period; normalise_prompt() applies that automatically.)
-PRODUCT_PROMPT = 'INSERT_PROMPT.'
+PRODUCT_PROMPT = 'red box.'
 
 # Detection thresholds. BOX: minimum confidence for a detection to count at all.
 # TEXT: how strongly the detection must match the words of the prompt.
@@ -38,9 +38,12 @@ TEXT_THRESHOLD = 0.25
 # otherwise. If MPS ever throws an unsupported-operation error, hardcode 'cpu'.
 DEVICE = 'mps' if torch.backends.mps.is_available() else 'cpu'
 
-# A4 sheet is 210mm wide × 297mm tall (portrait).
-# These constants control how the detector decides what counts as an A4 sheet.
-A4_ASPECT_RATIO     = 297 / 210   # ideal portrait aspect ratio ≈ 1.414
+# Reference sheet: US Letter, 8.5 × 11 in (215.9 × 279.4 mm, portrait) — tape-measured
+# 2026-07-09. Every "A4" name in this pipeline refers to this sheet; the original A4
+# assumption (210 × 297 mm) silently biased every measurement by −2.7%. If you switch
+# to a real A4 sheet, also update A4_REAL_WIDTH_M in depth_estimation.py and the
+# aspect check in measurement_extraction.py.
+A4_ASPECT_RATIO     = 279.4 / 215.9   # ideal portrait aspect ratio ≈ 1.294
 A4_ASPECT_TOLERANCE = 0.30        # allow ±30% deviation from ideal (handles slight angle)
 A4_MIN_AREA_FRAC    = 0.003       # sheet must cover at least 0.3% of frame area
 A4_MAX_AREA_FRAC    = 0.30        # and no more than 30% (rejects accidental full-frame white)
@@ -379,7 +382,7 @@ def process_frame(frame_path, dino_processor, dino_model, sam_model, camera_matr
 
 def main():
     
-    print("\n=== Step 3 — Instance Segmentation (Product) ===\n")
+    print("\n======== Step 3 — Instance Segmentation (Product) =========\n")
 
     if not os.path.isdir(FRAMES_DIR):
         print(f"[!] Frames directory not found: '{FRAMES_DIR}'")

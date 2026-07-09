@@ -168,7 +168,7 @@ def aggregate(all_results):
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print("=== Step 7 — Accuracy Validation ===\n")
+    print("\n======== Step 7 — Accuracy Validation =========\n")
 
     ground_truth = load_ground_truth(GROUND_TRUTH_FILE)
     if not ground_truth:
@@ -276,6 +276,9 @@ def main():
     # subject_ids + the calibration fingerprint make entries comparable later:
     # without them there is no way to tell WHAT was measured or under WHICH
     # calibration once the measurement files are cleaned up.
+    # The full per-measurement detail (signed errors, ground truth, reported
+    # precision) is embedded too: accuracy_report.json and ground_truth.json get
+    # overwritten every run, so this line is the only durable record of a run.
     history_entry = {
         'validated_at':       report['validated_at'],
         'validated_subjects':  validated_subjects,
@@ -284,6 +287,8 @@ def main():
         'overall_pass':        overall_pass,
         'overall_accuracy_pct': overall_accuracy_pct,
         'mean_abs_error_cm':  {dim: s['mean_abs_error_cm'] for dim, s in summary.items()},
+        'mean_signed_bias_cm': {dim: s['mean_signed_bias_cm'] for dim, s in summary.items()},
+        'measurements':        all_results,
     }
     with open(HISTORY_FILE, 'a') as f:
         f.write(json.dumps(history_entry) + '\n')

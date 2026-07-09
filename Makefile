@@ -1,5 +1,5 @@
 
-.PHONY: help setup camera-calibration instance-segmentation depth-estimation measurement-extraction merge-views accuracy-validation full-pipeline clean-images clean-frames clean-some-outputs clean-outputs clean-all
+.PHONY: help setup camera-calibration instance-segmentation depth-estimation measurement-extraction merge-views accuracy-validation diagnostic-overlay full-pipeline clean-images clean-frames clean-some-outputs clean-outputs clean-all
 
 VENV = venv
 PYTHON = $(VENV)/bin/python
@@ -12,6 +12,7 @@ help:
 	@echo "  make full-pipeline				* Run the entire pipeline"
 	@echo "  VIEW=side make measurement-extraction		* Measure a side-view capture set (default: front)"
 	@echo "  make merge-views				* Combine front+side views into the final measurements JSON"
+	@echo "  SUBJECT=x VIEW=side make diagnostic-overlay	* Render what the measurement step used (mask, bbox, endpoints, A4 quad)"
 	@echo "  make clean-all    				* Remove build artifacts and clear outputs"
 
 setup: requirements.txt
@@ -40,6 +41,10 @@ merge-views:
 	@echo "merging per-view measurements..."
 	@$(PYTHON) measurement_extraction_step/merge_views.py
 
+diagnostic-overlay:
+	@echo "rendering measurement diagnostic overlays..."
+	@$(PYTHON) measurement_extraction_step/diagnostic_overlay.py
+
 accuracy-validation:
 	@echo "running accuracy validation step..."
 	@$(PYTHON) accuracy_validation_step/accuracy_validation.py
@@ -61,8 +66,12 @@ clean-frames:
 clean-some-outputs:
 	@echo "cleaning some output directories..."
 	@rm -rf instance_segmentation_step/output/*
+	@rm -rf instance_segmentation_step/__pycache__
 	@rm -rf depth_estimation_step/output/*
+	@rm -rf depth_estimation_step/__pycache__
 	@rm -rf measurement_extraction_step/output/*
+	@rm -rf measurement_extraction_step/__pycache__
+	@rm -rf accuracy_validation_step/__pycache__
 
 clean-outputs:
 	@echo "cleaning all output directories..."

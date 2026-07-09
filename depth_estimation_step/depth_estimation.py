@@ -12,7 +12,10 @@ SEG_RESULTS  = os.path.join(SCRIPT_DIR, '..', 'instance_segmentation_step', 'out
 OUTPUT_DIR   = os.path.join(SCRIPT_DIR, 'output')
 DEPTH_MODEL  = 'depth-anything/Depth-Anything-V2-Small-hf'  # small = runs on M1 comfortably
 
-A4_REAL_WIDTH_M = 0.210   # A4 sheet width in metres (210mm)
+A4_REAL_WIDTH_M = 0.2159  # reference sheet width in metres — the sheet is US Letter
+                          # (8.5in, tape-measured 2026-07-09), not A4 (210mm); the
+                          # sheet width scales EVERY measurement 1:1, so this must
+                          # match the physical paper. See note in segmentation.py.
 
 # ─── Load depth model ─────────────────────────────────────────────────────────
 
@@ -141,7 +144,7 @@ def resize_depth_to_frame(depth_map, frame_path):
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print("=== Step 5 — Depth Estimation + Scale Anchoring ===\n")
+    print("\n======== Step 5 — Depth Estimation + Scale Anchoring =========\n")
 
     # Load segmentation results from Step 3
     if not os.path.exists(SEG_RESULTS):
