@@ -13,6 +13,10 @@ measurement_extraction_step/output/
 accuracy_validation_step/__pycache__/
 accuracy_validation_step/output/
 instance_segmentation_step/prompt_experiments/
+asset_generation_step/__pycache__/
+asset_generation_step/work/
+asset_generation_step/capture_sets/
+asset_generation_step/raw_models/
 
 
 # model weights (auto-downloaded)

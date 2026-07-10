@@ -26,7 +26,7 @@ SAM2_MODEL = os.path.join(SCRIPT_DIR, 'sam2.1_b.pt')   # downloads automatically
 # labels — 'black cylindrical thermos' or 'cardboard shipping box' both work.
 # Change this per product you measure. (The model expects lowercase text ending
 # in a period; normalise_prompt() applies that automatically.)
-PRODUCT_PROMPT = 'red box.'
+PRODUCT_PROMPT = 'INSERT_PRODUCT_NAME.'
 
 # Detection thresholds. BOX: minimum confidence for a detection to count at all.
 # TEXT: how strongly the detection must match the words of the prompt.
