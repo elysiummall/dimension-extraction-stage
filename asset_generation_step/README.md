@@ -121,7 +121,11 @@ SUBJECT=<subject_id> make build-asset
 #        FILL_HOLES (views whose enclosed mask holes get filled per frame,
 #          default top,bottom — reflections on glass/gloss punch false holes
 #          that would carve tunnels; set to exclude any view where the object
-#          has a REAL through-hole, e.g. a mug handle. Also takes all/none)
+#          has a REAL through-hole, e.g. a mug handle. Also takes all/none) ·
+#        CROSS_SECTION=round (rotationally symmetric products only — globes,
+#          bottles, jars: adds a per-height elliptical lathe constraint that
+#          removes the ~22% diagonal bulge perpendicular silhouettes can't
+#          carve. Default silhouette; round shaves corners off box-like items)
 ```
 
 **Quality-first policy:** triangle count and file size are NOT limited — the only
@@ -248,6 +252,7 @@ the bbox — or rebuild with `TARGET_FACES` set instead).
 asset_generation_step/
 ├── README.md                      ← this file
 ├── build_silhouette_mesh.py       BUILT — Route C reconstruction (the main event)
+├── color_hull.py                  BUILT — M2 v1 vertex colors (median-of-frames photo projection)
 ├── validate_glb.py                to build — validation gate
 ├── masks/<subject_id>/<view>/     per-view mask PNGs, filed away after each segmentation run
 ├── work/                          intermediates (<id>_hull.glb, debug previews)
@@ -286,7 +291,10 @@ and sit under the 10MB budget.
    `work/snowglobe_hull.glb` @ 512³: 2.05M triangles, watertight, bbox exactly
    10.40 × 13.70 × 10.20 cm, reprojection IoU 0.996 vs both views' silhouettes.
    Remaining: build `validate_glb.py`, then copy to `output/` as the first deliverable
-2. **M2 — Color:** vertex-color sampling from the front photo (v1), then evaluate
+2. **M2 — Color:** v1 BUILT (2026-07-13) — `color_hull.py`: per-view median across
+   all frames' undistorted photos (votes out moving reflections), blended per vertex
+   by normal direction (`SUBJECT=x make color-asset`, knob `BLEND_POWER` default 2;
+   raw frames must be in `instance_segmentation_step/frames/`). Next: evaluate
    whether projected UV textures (v2) are worth it
 3. **M3 — Top view (optional but likely):** add a top-view capture set for one curved
    product — mask-only lane, segmentation step and stop — and carve with three
@@ -302,7 +310,7 @@ and sit under the 10MB budget.
 | Width and depth swapped | Front/side masks assigned to wrong grid faces | Axis mapping in carve step; the bbox check catches it |
 | Mesh looks like blocky staircase | Voxel resolution too low / no smoothing | Raise RESOLUTION above the 512 default |
 | Product's hollow/handle came out solid | Concavity — silhouettes can't see it | Expected; add top view, or fall back to Route A |
-| Curved product looks inflated | Two-view hull limit | Add top view (M3); dims are still exact |
+| Curved product looks inflated / diagonal bulges | Perpendicular-hull limit (three circles carve a bulgy prism, not a sphere) | `CROSS_SECTION=round` if the product is rotationally symmetric; else add 45° views |
 | Ragged/noisy hull edges | Speckled or leaky mask on the chosen frame | Pick a different frame; strengthen morphology cleanup |
 | Tunnel/pit carved through the hull | Reflections (glass/gloss) punched false holes in a view's masks | Add that view to `FILL_HOLES` (top,bottom already default) |
 | Colors misaligned on the mesh | Mask crop offset vs photo coordinates | Project with the same tight-bbox offsets used in carving |

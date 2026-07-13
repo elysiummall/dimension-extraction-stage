@@ -16,7 +16,7 @@ segmentation step writes). Copy each capture set's masks there after running
 the segmentation step on it — extra views (back/top) only need segmentation,
 not depth/measurement, since scale comes entirely from the measurements JSON.
 
-Usage:  SUBJECT=snowglobe make build-asset
+Usage:  SUBJECT=snowglobe CROSS_SECTION=round make build-asset
         SUBJECT=snowglobe RESOLUTION=768 SIDE_FROM=left FILL_HOLES=all \
             venv/bin/python asset_generation_step/build_silhouette_mesh.py
 
@@ -49,6 +49,14 @@ SIDE_FROM  = os.environ.get('SIDE_FROM', 'right')
 # from the front) must exclude that view. Accepts a comma-separated subset of
 # front,side,back,top,bottom, or 'all' / 'none'.
 FILL_HOLES = os.environ.get('FILL_HOLES', 'top,bottom')
+# Perpendicular silhouettes can't carve a round object round — three circles
+# intersect as a prism that bulges up to ~22% proud of the true sphere on the
+# diagonals. 'round' adds a lathe constraint for rotationally symmetric
+# products (globes, bottles, jars): at each height, voxels must fall inside
+# the ellipse spanned by that height's front half-width and side half-depth.
+# Keep 'silhouette' (default) for box-like/asymmetric products — 'round'
+# would shave their corners off.
+CROSS_SECTION = os.environ.get('CROSS_SECTION', 'silhouette')
 
 VOTE_FRACTION     = 0.5   # pixel kept if inside >= this fraction of a view's masks
 SMOOTH_ITERATIONS = 10
@@ -72,6 +80,10 @@ _unknown = FILL_HOLES_VIEWS - set(VIEWS)
 if _unknown:
     print(f"[!] FILL_HOLES names unknown view(s) {sorted(_unknown)} — "
           f"valid: {', '.join(VIEWS)}, or all/none.")
+    sys.exit(1)
+if CROSS_SECTION not in ('silhouette', 'round'):
+    print(f"[!] CROSS_SECTION must be 'silhouette' or 'round', "
+          f"not '{CROSS_SECTION}'.")
     sys.exit(1)
 
 
@@ -191,6 +203,37 @@ def orient_to_grid(sil, view):
     raise ValueError(view)
 
 
+def lathe_constraint(grid_shape, faces):
+    """CROSS_SECTION=round: per height, an elliptical disc whose semi-axes are
+    that height's front half-width and side half-depth. Equivalent to carving
+    with a continuum of views rotated about the vertical axis — removes the
+    diagonal bulges the four perpendicular views can't see. Row centers come
+    from each row's own extent, so an off-axis profile (spout, lean) follows
+    the silhouette rather than snapping to the grid center."""
+    nx, ny, nz = grid_shape
+    occ = np.zeros(grid_shape, dtype=bool)
+    xs, zs = np.arange(nx), np.arange(nz)
+    side = faces['side'] if 'side' in faces else None       # [iz, iy]
+    for iy in range(ny):
+        span_x = np.flatnonzero(faces['front'][:, iy])
+        if span_x.size == 0:
+            continue
+        cx = (span_x[0] + span_x[-1]) / 2
+        rx = max((span_x[-1] - span_x[0]) / 2, 0.5)
+        if side is not None:
+            span_z = np.flatnonzero(side[:, iy])
+            if span_z.size == 0:
+                continue
+            cz = (span_z[0] + span_z[-1]) / 2
+            rz = max((span_z[-1] - span_z[0]) / 2, 0.5)
+        else:
+            # no side view: assume a circular section centered in depth
+            cz, rz = (nz - 1) / 2, rx
+        occ[:, iy, :] = (((xs - cx) / rx) ** 2)[:, None] \
+                      + (((zs - cz) / rz) ** 2)[None, :] <= 1.0
+    return occ
+
+
 def carve(grid_shape, faces):
     """AND together each available view's silhouette, extruded through the grid."""
     occ = np.ones(grid_shape, dtype=bool)
@@ -204,6 +247,9 @@ def carve(grid_shape, faces):
         occ &= faces['top'][:, None, :]             # [ix, iz] -> broadcast over Y
     if 'bottom' in faces:
         occ &= faces['bottom'][:, None, :]
+    if CROSS_SECTION == 'round':
+        occ &= lathe_constraint(grid_shape, faces)
+        print("    round cross-section (lathe) applied")
     return occ
 
 
@@ -264,6 +310,7 @@ def embed_provenance(glb_path, dims_cm, stage2_meta, views_used, grid_shape):
         'views_used':         views_used,
         'side_captured_from': SIDE_FROM if 'side' in views_used else None,
         'holes_filled_views': sorted(FILL_HOLES_VIEWS & set(views_used)),
+        'cross_section':      CROSS_SECTION,
         'voxel_grid':         list(grid_shape),
         'stage2_model_versions': stage2_meta.get('model_versions'),
     }

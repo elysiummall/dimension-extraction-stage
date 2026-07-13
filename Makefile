@@ -1,5 +1,5 @@
 
-.PHONY: help setup camera-calibration instance-segmentation depth-estimation measurement-extraction merge-views accuracy-validation diagnostic-overlay build-asset full-pipeline clean-images clean-frames clean-some-outputs clean-outputs clean-all
+.PHONY: help setup camera-calibration instance-segmentation depth-estimation measurement-extraction merge-views accuracy-validation diagnostic-overlay build-asset color-asset full-pipeline clean-images clean-frames clean-some-outputs clean-outputs clean-all
 
 VENV = venv
 PYTHON = $(VENV)/bin/python
@@ -53,6 +53,10 @@ accuracy-validation:
 build-asset:
 	@echo "building silhouette-hull mesh (Stage 3)..."
 	@$(PYTHON) asset_generation_step/build_silhouette_mesh.py
+
+color-asset:
+	@echo "painting vertex colors from capture photos (Stage 3, M2)..."
+	@$(PYTHON) asset_generation_step/color_hull.py
 
 most-pipeline: instance-segmentation depth-estimation measurement-extraction merge-views
 	@echo "running the majority of the pipeline"
